@@ -1,6 +1,6 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
-import { gateSession } from "./faq-gate.server";
+import { apiFetch } from "./api.server";
 
 export type Faq = {
   id: string;
@@ -11,10 +11,29 @@ export type Faq = {
   tags: string[];
   created_by: string | null;
   updated_by: string | null;
-  updated_at: string;
+  updatedAt: string;
   source?: string;
-  deleted_at?: string;
 };
+
+/** Envelope devolvido pelos endpoints paginados do backend. */
+export type Paginated<T> = {
+  items: T[];
+  total: number;
+  page: number;
+  limit: number;
+  totalPages: number;
+  hasNext?: boolean;
+  hasPrev?: boolean;
+};
+
+export type CategoryStats = {
+  categories: { category: string; count: number }[];
+  totalFaqs: number;
+  totalCategories: number;
+};
+
+/** Pedido ao backend quando o usuário quer as FAQs sem categoria. */
+export const SEM_CATEGORIA = "__sem_categoria__";
 
 export type Activity = {
   id: string;
@@ -36,112 +55,76 @@ const faqInput = z.object({
   source: z.string().optional(),
 });
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL || "http://127.0.0.1:3333";
-
-export const getGateStatus = createServerFn({ method: "GET" }).handler(async () => {
-  const session = await gateSession();
-  return {
-    unlocked: session.data.unlocked ?? false,
-    name: session.data.name ?? null
-  };
+const listFaqsQuery = z.object({
+  page: z.number().int().min(1).default(1),
+  limit: z.number().int().min(1).max(100).default(20),
+  search: z.string().trim().max(120).optional(),
+  category: z.string().trim().max(120).optional(),
 });
 
-export const unlockDashboard = createServerFn({ method: "POST" })
+/** Monta a querystring omitindo valores vazios: `?search=` casaria com tudo. */
+function montarQuery(params: Record<string, string | number | undefined>): string {
+  const busca = new URLSearchParams();
+  for (const [chave, valor] of Object.entries(params)) {
+    if (valor !== undefined && valor !== null && String(valor).trim() !== "") {
+      busca.set(chave, String(valor));
+    }
+  }
+  return busca.toString();
+}
+
+export const listFaqs = createServerFn({ method: "GET" })
+  .inputValidator((data: unknown) => listFaqsQuery.parse(data ?? {}))
+  .handler(async ({ data }: { data: z.infer<typeof listFaqsQuery> }): Promise<Paginated<Faq>> => {
+    return apiFetch<Paginated<Faq>>(`/faqs?${montarQuery(data)}`);
+  });
+
+/**
+ * Contagens por categoria. Substitui o agrupamento que as páginas faziam
+ * baixando a coleção inteira — com 2451 FAQs, só para exibir ~18 números.
+ */
+export const getFaqCategories = createServerFn({ method: "GET" }).handler(
+  async (): Promise<CategoryStats> => {
+    return apiFetch<CategoryStats>("/faqs/categories");
+  }
+);
+
+export const listActivity = createServerFn({ method: "GET" })
   .inputValidator((data: unknown) =>
     z
       .object({
-        name: z.string().trim().min(2, "Informe seu nome").max(60),
-        password: z.string().min(1),
+        page: z.number().int().min(1).default(1),
+        limit: z.number().int().min(1).max(100).default(15),
       })
-      .parse(data),
+      .parse(data ?? {}),
   )
-  .handler(async ({ data }: { data: any }) => {
-    try {
-      const rs = await fetch(`${API_BASE}/gate/unlock`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(data),
-      });
-      const result = await rs.json();
-      if (result.ok) {
-        const session = await gateSession();
-        await session.update({ unlocked: true, name: data.name });
-      }
-      return result;
-    } catch (e) {
-      console.error("[unlockDashboard Error]:", e);
-      throw e;
-    }
+  .handler(async ({ data }: { data: { page: number; limit: number } }): Promise<Paginated<Activity>> => {
+    return apiFetch<Paginated<Activity>>(`/activity?${montarQuery(data)}`);
   });
-
-export const lockDashboard = createServerFn({ method: "POST" }).handler(async () => {
-  const session = await gateSession();
-  await session.clear();
-  return { ok: true };
-});
-
-export const listFaqs = createServerFn({ method: "GET" }).handler(async (): Promise<Faq[]> => {
-  const rs = await fetch(`${API_BASE}/faqs`);
-  return rs.json();
-});
-
-export const listActivity = createServerFn({ method: "GET" }).handler(
-  async (): Promise<Activity[]> => {
-    const rs = await fetch(`${API_BASE}/activity`);
-    return rs.json();
-  }
-);
 
 export const createFaq = createServerFn({ method: "POST" })
   .inputValidator((data: unknown) => faqInput.parse(data))
   .handler(async ({ data }: { data: any }) => {
-    const session = await gateSession();
-    const actor = session.data.name || "";
-
-    const rs = await fetch(`${API_BASE}/faqs`, {
+    return apiFetch<{ ok?: boolean }>("/faqs", {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-actor-name": actor
-      },
       body: JSON.stringify(data),
     });
-    if (!rs.ok) throw new Error("Erro ao criar FAQ");
-    return rs.json();
   });
 
 export const updateFaq = createServerFn({ method: "POST" })
   .inputValidator((data: unknown) => faqInput.extend({ id: z.string() }).parse(data))
   .handler(async ({ data }: { data: any }) => {
-    const session = await gateSession();
-    const actor = session.data.name || "";
-
-    const rs = await fetch(`${API_BASE}/faqs`, {
+    return apiFetch<{ ok?: boolean }>("/faqs", {
       method: "PUT",
-      headers: {
-        "Content-Type": "application/json",
-        "x-actor-name": actor
-      },
       body: JSON.stringify(data),
     });
-    if (!rs.ok) throw new Error("Erro ao editar FAQ");
-    return rs.json();
   });
 
 export const deleteFaq = createServerFn({ method: "POST" })
   .inputValidator((data: unknown) => z.object({ id: z.string() }).parse(data))
   .handler(async ({ data }: { data: any }) => {
-    const session = await gateSession();
-    const actor = session.data.name || "";
-
-    const rs = await fetch(`${API_BASE}/faqs`, {
+    return apiFetch<{ ok?: boolean }>("/faqs", {
       method: "DELETE",
-      headers: {
-        "Content-Type": "application/json",
-        "x-actor-name": actor
-      },
       body: JSON.stringify(data),
     });
-    if (!rs.ok) throw new Error("Erro ao excluir FAQ");
-    return rs.json();
   });

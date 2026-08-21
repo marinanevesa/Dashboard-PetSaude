@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { usePodeEscrever } from "@/components/gate";
 import {
   Dialog,
   DialogContent,
@@ -38,35 +39,6 @@ export function normalize(value: string) {
 export function faqCategories(faq: Faq) {
   const list = faq.categories?.length ? faq.categories : faq.category ? [faq.category] : [];
   return list.map((item) => item.trim()).filter(Boolean);
-}
-
-function scoreFaq(faq: Faq, term: string) {
-  const q = normalize(term.trim());
-  if (!q) return 1;
-  const tokens = q.split(/\s+/);
-  const haystacks = [
-    normalize(faq.question),
-    normalize(faqCategories(faq).join(" ")),
-    normalize(faq.tags.join(" ")),
-  ];
-  let score = 0;
-  for (const token of tokens) {
-    if (haystacks[0].includes(token)) score += 3;
-    if (haystacks[1].includes(token)) score += 2;
-    if (haystacks[2].includes(token)) score += 2;
-  }
-  return score;
-}
-
-export function useSearchableFaqs(faqs: Faq[], term: string) {
-  return useMemo(() => {
-    if (!term.trim()) return faqs;
-    return faqs
-      .map((faq) => ({ faq, score: scoreFaq(faq, term) }))
-      .filter((item) => item.score > 0)
-      .sort((a, b) => b.score - a.score)
-      .map((item) => item.faq);
-  }, [faqs, term]);
 }
 
 export function SearchField({
@@ -345,6 +317,7 @@ export function FaqFormDialog({
 }
 
 export function FaqCard({ faq, compact = false }: { faq: Faq; compact?: boolean }) {
+  const podeEscrever = usePodeEscrever();
   const queryClient = useQueryClient();
   const remove = useServerFn(deleteFaq);
   const [editing, setEditing] = useState(false);
@@ -396,27 +369,32 @@ export function FaqCard({ faq, compact = false }: { faq: Faq; compact?: boolean 
             {faq.created_by ? ` · criada por ${faq.created_by}` : ""}
           </p>
         </div>
-        <div className="flex shrink-0 items-center gap-1">
-          <Button
-            variant="ghost"
-            size="icon"
-            aria-label="Editar pergunta"
-            title="Editar"
-            onClick={() => setEditing(true)}
-          >
-            <Pencil className="size-4" />
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            aria-label="Excluir pergunta"
-            title="Excluir"
-            className="text-destructive hover:text-destructive"
-            onClick={() => setDeleting(true)}
-          >
-            <Trash2 className="size-4" />
-          </Button>
-        </div>
+        {/* Quem só tem leitura não vê os botões. A garantia de verdade está
+            no backend, que exige papel admin ou editor para escrever — isto
+            aqui evita oferecer uma ação que resultaria em 403. */}
+        {podeEscrever && (
+          <div className="flex shrink-0 items-center gap-1">
+            <Button
+              variant="ghost"
+              size="icon"
+              aria-label="Editar pergunta"
+              title="Editar"
+              onClick={() => setEditing(true)}
+            >
+              <Pencil className="size-4" />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              aria-label="Excluir pergunta"
+              title="Excluir"
+              className="text-destructive hover:text-destructive"
+              onClick={() => setDeleting(true)}
+            >
+              <Trash2 className="size-4" />
+            </Button>
+          </div>
+        )}
       </div>
 
       <FaqFormDialog mode="edit" faq={faq} open={editing} onOpenChange={setEditing} />
@@ -455,6 +433,10 @@ export function InsertFaqButton({
   label?: string;
 }) {
   const [open, setOpen] = useState(false);
+  const podeEscrever = usePodeEscrever();
+
+  if (!podeEscrever) return null;
+
   return (
     <>
       <Button onClick={() => setOpen(true)}>
